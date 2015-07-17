@@ -1,7 +1,7 @@
 import os
 import glob
 import numpy as np
-from __init__ import logger
+from __init__ import logger, logfilename
 import math
 import const
 import matplotlib.gridspec as gridspec
@@ -40,6 +40,10 @@ class Grid3d(object):
         self.t00_best = None
         self.t00_misfit = None
         self.t00_array = None
+
+        self.m00_best = None
+        self.m00_misfit = None
+        self.m00_array = None
 
     def setup_weight(self, weight_mode="num_wins"):
         """
@@ -223,8 +227,11 @@ class Grid3d(object):
                 array_idx += 1
 
     def grid_search_source(self):
+
+        print "****************"
+        print "See detailed result in: %s\n" %logfilename
+
         self.setup_weight()
-        self.calculate_tshift()
 
         if self.config.origin_time_inversion:
             self.grid_search_origin_time()
@@ -234,12 +241,15 @@ class Grid3d(object):
 
     def grid_search_origin_time(self):
 
-        self.setup_weight()
+        logger.info("Origin time search...")
+
         self.calculate_tshift()
 
         t00_s = self.config.t00_s
         t00_e = self.config.t00_e
-        dt00 = self.config.dt00
+        dt00 = self.config.dt00_over_dt * self.window[0].datalist['obsd'].stats.delta
+        logger.info("Grid search dt00: %6.3f" % dt00)
+
         t00_array = np.arange(t00_s, t00_e+dt00, dt00)
         nt00 = t00_array.shape[0]
         misfit = np.zeros(nt00)
@@ -259,17 +269,22 @@ class Grid3d(object):
 
     def grid_search_energy(self):
 
+        logger.info('Energy Search...')
+
         m00_s = self.config.m00_s
         m00_e = self.config.m00_e
         dm00 = self.config.dm00
-        m00_array = np.arange(m00_s, m00_e, dm00)
+        m00_array = np.arange(m00_s, m00_e+dm00, dm00)
         nm00 = m00_array.shape[0]
         misfit = np.zeros(nm00)
 
         for i in range(nm00):
             m00 = m00_array[i]
-            dlnA_array = self.calculate_misfit_for_m00(m00)
-            misfit[i] = dlnA_array **2 * self.weight_array
+            dlnA_array, cc_amp_array, kai_array = self.calculate_misfit_for_m00(m00)
+            if self.config.energy_misfit_function == 'energy':
+                misfit[i] = np.sum((0.25 * dlnA_array ** 2 + 1.0 * cc_amp_array ** 2) * self.weight_array)
+            else:
+                misfit[i] = np.sum(kai_array * self.weight_array)
 
         # find minimum
         min_idx = misfit.argmin()
@@ -277,29 +292,66 @@ class Grid3d(object):
 
         logger.info("best m00: %6.3f" % m00_best)
         self.m00_best = m00_best
-        self.energy_misfit = misfit
+        self.m00_misfit = misfit
         self.m00_array = m00_array
 
     def calculate_misfit_for_m00(self, m00):
         dlnA_array = []
+        cc_amp_array = []
+        kai_array = []
         total_idx = 0
         for window in self.window:
             obsd = window.datalist['obsd']
             synt = window.datalist['synt']
-            npts = min(obsd.stats.npts, synt.stats.npts)
-            for win_idx in window.num_wins:
-                win = [window.win_time[win_idx, 0], window.win_time[win_idx, 1]]
-                nshift = window.tshift[win_idx] / obsd.stats.delta
-                istart = int(max(math.floor(win[0] / obsd.stats.delta), 1))
-                iend = int(min(math.ceil(win[1] / obsd.stats.delta), npts))
-                istart_d, iend_d, istart_s, iend_s = \
-                    self.apply_station_correction(istart, iend, nshift, npts)
-                dlnA = self._dlnA_win_(obsd.data[istart_d:iend_d], m00*synt.data[istart_s:iend_s])
-                dlnA_array[total_idx] = dlnA
-                total_idx += 1
-        return np.array(dlnA_array)
+            synt_new = synt.copy()
+            synt_new.data = synt_new.data * m00
+            [v, d, nshift, cc, dlnA, cc_amp_value] = self.calculate_var_one_trace(obsd, synt_new, window.win_time)
+            for win_idx in range(window.num_wins):
+                dlnA_array.append(dlnA[win_idx])
+                cc_amp_array.append(cc_amp_value[win_idx])
+                kai_array.append(v[win_idx]/d[win_idx])
+        return np.array(dlnA_array), np.array(cc_amp_array), np.array(kai_array)
 
-    def apply_station_correction(self, istart, iend, nshift, npts):
+    def calculate_var_one_trace(self, obsd, synt, win_time):
+        """
+        Calculate the variance reduction on a pair of obsd and synt and windows
+        :param obsd: observed data trace
+        :type obsd: :class:`obspy.core.trace.Trace`
+        :param synt: synthetic data trace
+        :type synt: :class:`obspy.core.trace.Trace`
+        :param win_time: [win_start, win_end]
+        :type win_time: :class:`list` or :class:`numpy.array`
+        :return:  waveform misfit reduction and observed data energy [v1, d1]
+        :rtype: [float, float]
+        """
+        num_wins = win_time.shape[0]
+        v1 = np.zeros(num_wins)
+        d1 = np.zeros(num_wins)
+        nshift_array = np.zeros(num_wins)
+        cc_array = np.zeros(num_wins)
+        dlnA_array = np.zeros(num_wins)
+        cc_amp_value_array = np.zeros(num_wins)
+        npts = min(obsd.stats.npts, synt.stats.npts)
+        for _win_idx in range(win_time.shape[0]):
+            tstart = win_time[_win_idx, 0]
+            tend = win_time[_win_idx, 1]
+            idx_start = int(max(math.floor(tstart / obsd.stats.delta), 1))
+            idx_end = int(min(math.ceil(tend / obsd.stats.delta), obsd.stats.npts))
+
+            istart_d, iend_d, istart, iend, nshift, cc, dlnA, cc_amp_value = \
+                self.apply_station_correction(obsd, synt, idx_start, idx_end)
+
+            taper = self.construct_hanning_taper(iend - istart)
+            v1[_win_idx] = np.sum(taper * (synt.data[istart:iend] - obsd.data[istart_d:iend_d]) ** 2)
+            d1[_win_idx] = np.sum(taper * obsd.data[istart_d:iend_d] ** 2)
+            nshift_array[_win_idx] = nshift
+            cc_array[_win_idx] = cc
+            dlnA_array[_win_idx] = dlnA
+            cc_amp_value_array[_win_idx] = cc_amp_value
+            # print "v1, idx:", v1[_win_idx], istart, iend, istart_d, iend_d, _win_idx, nshift
+        return [v1, d1, nshift_array, cc_array, dlnA_array, cc_amp_value_array]
+
+    def apply_station_correction(self, obsd, synt, istart, iend):
         """
         Apply station correction on windows based one cross-correlation time shift if config.station_correction
         :param obsd:
@@ -308,28 +360,64 @@ class Grid3d(object):
         :param iend:
         :return:
         """
+        npts = min(obsd.stats.npts, synt.stats.npts)
+        [nshift, cc, dlnA] = self.calculate_criteria(obsd, synt, istart, iend)
         istart_d = max(1, istart + nshift)
         iend_d = min(npts, iend + nshift)
         istart_s = istart_d - nshift
         iend_s = iend_d - nshift
-        return istart_d, iend_d, istart_s, iend_s
+        # recalculate the dlnA and cc_amp_value(considering the shift)
+        dlnA = self._dlnA_win_(obsd[istart_d:iend_d], synt[istart_s:iend_s])
+        cc_amp_value = 10*np.log10(np.sum(obsd[istart_d:iend_d] * synt[istart_s:iend_s]) / (synt[istart_s:iend_s] ** 2).sum())
+        return istart_d, iend_d, istart_s, iend_s, nshift, cc, dlnA, cc_amp_value
+
+    def calculate_criteria(self, obsd, synt, istart, iend):
+        """
+        Calculate the time shift, max cross-correlation value and energy differnce
+        :param obsd: observed data trace
+        :type obsd: :class:`obspy.core.trace.Trace`
+        :param synt: synthetic data trace
+        :type synt: :class:`obspy.core.trace.Trace`
+        :param istart: start index of window
+        :type istart: int
+        :param iend: end index of window
+        :param iend: int
+        :return: [number of shift points, max cc value, dlnA]
+        :rtype: [int, float, float]
+        """
+        obsd_trace = obsd.data[istart:iend]
+        synt_trace = synt.data[istart:iend]
+        max_cc, nshift = self._xcorr_win_(obsd_trace, synt_trace)
+        dlnA = self._dlnA_win_(obsd_trace, synt_trace)
+
+        return [nshift, max_cc, dlnA]
 
     def calculate_tshift_misfit(self, t00):
         misfit = np.sum(self.weight_array * (self.tshift_array - t00)**2)
         return misfit
 
-    def plot_time_stats_histogram(self, outputdir="."):
+    def plot_summary(self, outputdir="."):
+
+        if not os.path.exists(outputdir):
+            os.makedirs(outputdir)
+
+        if self.config.origin_time_inversion:
+            self.plot_origin_time_summary(outputdir=outputdir)
+        if self.config.energy_inversion:
+            self.plot_energy_summary(outputdir=outputdir)
+
+    def plot_origin_time_summary(self, outputdir="."):
         """
-        Plot histogram of result
+        Plot histogram and misfit curve of origin time result
 
         :param outputdir:
         :return:
         """
-        ncols = len(self.bin_category.keys()) + 1
-        nrows = 1
-        figname = "%s.time_search.png" % self.cmtsource.eventname
+        # histogram
+        nrows = len(self.bin_category.keys())
+        ncols = 1
+        figname = "%s.time_grid_search_histogram.png" % self.cmtsource.eventname
         figname = os.path.join(outputdir, figname)
-        print "Grid search time shift figure: %s" %figname
 
         # prepare the dict
         stats_before = {}
@@ -344,69 +432,96 @@ class Grid3d(object):
         for key in stats_before.keys():
             stats_before[key] = np.array(stats_before[key])
             stats_after[key] = np.array(stats_after[key])
-            stats_after[key] = stats_after[key] + self.t00_best
+            stats_after[key] = stats_after[key] - self.t00_best
 
-        self.plot_histogram(stats_before, stats_after, 'tshift')
+        entry_array = ['tshift']
+        nrows = len(self.bin_category.keys())
+        ncols = len(entry_array)
+        plt.figure(figsize=(5*ncols, 5*nrows))
+        G = gridspec.GridSpec(nrows, ncols)
+        tag_array = stats_before.keys()
+        for tag_idx, tag in enumerate(tag_array):
+            for entry_idx, entry in enumerate(entry_array):
+                self.plot_histogram_one_entry(G[tag_idx, entry_idx], tag, entry, stats_before[tag], stats_after[tag])
+        print "Grid search time shift histogram figure: %s" % figname
         plt.savefig(figname)
 
-    def plot_energy_stats_histogram(self, outputdir="."):
+        # plot misfit curve
+        figname = "%s.time_grid_search_misfit.png" % self.cmtsource.eventname
+        figname = os.path.join(outputdir, figname)
+        plt.figure()
+        plt.plot(self.t00_array, self.t00_misfit)
+        plt.grid()
+        print "Grid search time shift misfit figure: %s" % figname
+        plt.savefig(figname)
+
+    def plot_energy_summary(self, outputdir="."):
         """
         Plot histogram of dlnA 
 
         :param outputdir:
         :return:
         """
-        ncols = len(self.bin_category.keys()) + 1
-        nrows = 1
-        figname = "%s.time_search.png" % self.cmtsource.eventname
+        figname = "%s.energy_grid_search_histogram.png" % self.cmtsource.eventname
         figname = os.path.join(outputdir, figname)
-        print "Grid search time shift figure: %s" % figname
 
         # prepare the dict
         stats_before = {}
         stats_after = {}
         for window in self.window:
             tag = window.tag['obsd']
+            obsd = window.datalist['obsd']
+            synt = window.datalist['synt']
+            synt_new = synt.copy()
+            synt_new.data = synt_new.data * self.m00_best
             if tag not in stats_before.keys():
                 stats_before[tag] = []
+                stats_after[tag] = []
+            [v1, d1, nshift1, cc1, dlnA1, cc_amp_value1] = self.calculate_var_one_trace(obsd, synt, window.win_time)
+            [v2, d2, nshift2, cc2, dlnA2, cc_amp_value2] = self.calculate_var_one_trace(obsd, synt_new, window.win_time)
             for _idx in range(window.num_wins):
-                stats_before[tag].append(window.tshift[_idx])
-        stats_after = stats_before.copy()
+                stats_before[tag].append([v1[_idx]/d1[_idx], cc1[_idx], dlnA1[_idx], cc_amp_value1[_idx]])
+                stats_after[tag].append([v2[_idx]/d2[_idx], cc2[_idx], dlnA2[_idx], cc_amp_value2[_idx]])
         for key in stats_before.keys():
             stats_before[key] = np.array(stats_before[key])
             stats_after[key] = np.array(stats_after[key])
-            stats_after[key] = stats_after[key] + self.t00_best
 
-        self.plot_histogram(stats_before, stats_after, 'energy')
-
-        # plot misfit curve
-        plt.subplot(G[0, -1])
-        plt.plot(self.t00_array, self.misfit)
-
-        plt.savefig(figname)
-
-    def plot_histogram(self, stats_before, stats_after, tag):
-
+        entry_array = ['Kai', 'CC', 'Power Ratio', 'CC AMP']
+        nrows = len(self.bin_category.keys())
+        ncols = len(entry_array)
         plt.figure(figsize=(5*ncols, 5*nrows))
         G = gridspec.GridSpec(nrows, ncols)
+        tag_array = stats_before.keys()
+        for tag_idx, tag in enumerate(tag_array):
+            for entry_idx, entry in enumerate(entry_array):
+                self.plot_histogram_one_entry(G[tag_idx, entry_idx], tag, entry, stats_before[tag][:, entry_idx],
+                                              stats_after[tag][:, entry_idx])
+        print "Grid search energy histogram figure: %s" % figname
+        plt.savefig(figname)
 
-        # plot histogram
-        key_array = stats_before.keys()
-        for _idx, key in enumerate(key_array):
-            self.plot_tshift_one_category(G[0, _idx], tag, key, stats_before[key], stats_after[key])
+        # plot misfit curve
+        plt.figure()
+        figname = "%s.energy_grid_search_misfit.png" % self.cmtsource.eventname
+        figname = os.path.join(outputdir, figname)
+        plt.plot(self.m00_array, self.m00_misfit)
+        plt.grid()
+        print "Grid search energy misfit curve figure: %s" % figname
+        plt.savefig(figname)
 
-
-    def plot_tshift_one_category(self, pos, tag, key, tshift_before, tshift_after):
+    @staticmethod
+    def plot_histogram_one_entry(pos, tag, entry, value_before, value_after):
         ax = plt.subplot(pos)
-        plt.xlabel('tshift')
-        plt.ylabel(key)
-        ax_min = min(min(tshift_after), min(tshift_before))
-        ax_max = max(max(tshift_after), max(tshift_after))
-        abs_max = max(abs(ax_min), abs(ax_max))
-        ax_min = -abs_max
-        ax_max = abs_max
-        plt.hist(tshift_before, bins=20, facecolor='blue', alpha=0.3)
-        plt.hist(tshift_after, bins=20, facecolor='green', alpha=0.5)
+        plt.xlabel(entry)
+        plt.ylabel(tag)
+        ax_min = min(min(value_after), min(value_before))
+        ax_max = max(max(value_after), max(value_after))
+        if entry in ['tshift', 'CC AMP', 'Power Ratio']:
+            abs_max = max(abs(ax_min), abs(ax_max))
+            ax_min = -abs_max
+            ax_max = abs_max
+        binwidth = (ax_max - ax_min) / 15
+        plt.hist(value_before, bins=np.arange(ax_min, ax_max+binwidth/2., binwidth), facecolor='blue', alpha=0.3)
+        plt.hist(value_after, bins=np.arange(ax_min, ax_max+binwidth/2., binwidth), facecolor='green', alpha=0.5)
 
     @staticmethod
     def _xcorr_win_(obsd, synt):

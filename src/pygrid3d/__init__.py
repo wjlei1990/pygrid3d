@@ -7,7 +7,7 @@ logger = logging.getLogger("pycmt3d")
 logger.setLevel(logging.INFO)
 logger.propagate = 0
 
-logfilename = "log.txt"
+logfilename = "grid3d.log"
 if os.path.exists(logfilename):
     os.remove(logfilename)
 

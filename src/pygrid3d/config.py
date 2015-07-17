@@ -36,31 +36,29 @@ class Config(object):
     :param bootstrap_repeat: bootstrap iterations
     """
 
-    def __init__(self, origin_time_inversion=True, t00_s=-5.0, t00_e=-5.0, dt00=1.00,
-                 energy_inversion=True, m00_s=-0.05, m00_e=0.05, dm00=0.01,
+    def __init__(self, origin_time_inversion=True, t00_s=-5.0, t00_e=5.0, dt00_over_dt=1,
+                 energy_inversion=True, m00_s=0.50, m00_e=1.50, dm00=0.04, energy_misfit_function="waveform",
                  weight_data=True, weight_function=None,
-                 normalize_category=True,
-                 bootstrap=True, bootstrap_repeat=300):
+                 normalize_category=True):
 
         self.origin_time_inversion = origin_time_inversion
         self.t00_s = t00_s
         self.t00_e = t00_e
-        self.dt00 = dt00
+        # searching grid = dt * dt00_over_dt(dt is the sampling rate)
+        self.dt00_over_dt = dt00_over_dt
         self.energy_inversion = energy_inversion
-        self.e00_s = m00_s
-        self.e00_e = m00_e
-        self.de00 = dm00
+        if energy_misfit_function.lower() not in ['waveform', 'energy']:
+            raise ValueError("Two energy_misfit_function: 1) waveform; 2) energy")
+        self.energy_misfit_function = energy_misfit_function
+        self.m00_s = m00_s
+        self.m00_e = m00_e
+        self.dm00 = dm00
         self.weight_data = weight_data
         if weight_function is not None:
             self.weight_function = weight_function
         else:
             self.weight_function = default_weight_function
         self.normalize_category = normalize_category
-
-        self.par_name = const.PAR_LIST
-
-        self.bootstrap = bootstrap
-        self.bootstrap_repeat = bootstrap_repeat
 
         self.print_summary()
 
@@ -81,3 +79,9 @@ class Config(object):
                 logger.info("   Weighting data ===> Using user-defined weighting function")
         else:
             logger.info("   No weighting applied")
+        if self.origin_time_inversion:
+            logger.info("Time start, grid ratio and end: [%6.3f %6.3f]"
+                        % (self.t00_s, self.t00_e))
+        if self.energy_inversion:
+            logger.info("Energy start, grid, and end   : [%6.3f %6.3f %6.3f]"
+                        % (self.m00_s, self.dm00, self.m00_e))

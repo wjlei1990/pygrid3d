@@ -48,6 +48,7 @@ class Window(object):
         self.source = source
 
         self.tshift = None
+        self.dlnA = None
 
     def win_energy(self, mode='data_and_synt'):
         """
@@ -97,7 +98,7 @@ class DataContainer(object):
     """
     Class that contains methods that load data and window information
     """
-    def __init__(self, par_list):
+    def __init__(self, par_list=[]):
         """
         :param flexwin_file: old way of flexwin output file for cmt3d
         :param par_list: derivative parameter name list
