@@ -7,23 +7,33 @@ import const
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 from util import construct_taper
+from user_defined_weighting_function import default_weight_function 
 
-class Grid3d(object):
+
+class MiniConfig(object):
+
+    def __init__(self, normalize_category=True, weight_function=None):
+
+        self.normalize_category = normalize_category
+        if weight_function is None:
+            self.weight_function = default_weight_function
+        else:
+            self.weight_function = weight_function
+
+
+class StatsWindow(object):
     """
-    Class that handle the grid search solver for origin time and moment scalar
+    Class that stats window
     """
 
     def __init__(self, cmtsource, data_container, config):
-        self.config = config
         self.cmtsource = cmtsource
         self.data_container = data_container
+        self.config = config
         self.window = self.data_container.window
         self.nwins = self.data_container.nwins
 
         self.weight_array = np.zeros(self.nwins)
-
-        self.new_cmt_par = None
-        self.new_cmtsource = None
 
         # azimuth information
         self.naz_files = None
@@ -34,17 +44,12 @@ class Grid3d(object):
         # category bin
         self.bin_category = None
 
-        # nshift array
-        self.tshift_array = np.zeros(self.nwins)
-        self.dlnA_array = np.zeros(self.nwins)
-
-        self.t00_best = None
-        self.t00_misfit = None
-        self.t00_array = None
-
-        self.m00_best = None
-        self.m00_misfit = None
-        self.m00_array = None
+        self.misfit = dict()
+        self.weight_dict = dict()
+        self.tshift_dict = dict()
+        self.dlnA_dict = dict()
+        self.cc_amp_dict = dict()
+        self.kai_dict = dict()
 
     def setup_weight(self, weight_mode="num_wins"):
         """
@@ -53,29 +58,30 @@ class Grid3d(object):
         """
         logger.info("*" * 15)
         logger.info("Start weighting...")
-        if self.config.weight_data:
-            # first calculate azimuth and distance for each data pair
-            self.prepare_for_weighting()
-            # then calculate azimuth weighting
-            for idx, window in enumerate(self.window):
-                if weight_mode.lower() == "num_files":
-                    # weighted by the number of files in each azimuth bin
-                    self.setup_weight_for_location(window, self.naz_files,
-                                                   self.naz_files_all)
-                else:
-                    # weighted by the number of windows in each azimuth bin
-                    self.setup_weight_for_location(window, self.naz_wins,
-                                                   self.naz_wins_all)
 
-                if self.config.normalize_category:
-                    self.setup_weight_for_category(window)
+        # first calculate azimuth and distance for each data pair
+        self.prepare_for_weighting()
+        # then calculate azimuth weighting
+        for idx, window in enumerate(self.window):
+            if weight_mode.lower() == "num_files":
+                # weighted by the number of files in each azimuth bin
+                self.setup_weight_for_location(window, self.naz_files,
+                                               self.naz_files_all)
+            else:
+                # weighted by the number of windows in each azimuth bin
+                self.setup_weight_for_location(window, self.naz_wins,
+                                               self.naz_wins_all)
 
-            # normalization of data weights
-            self.normalize_weight()
+            if self.config.normalize_category:
+                self.setup_weight_for_category(window)
+
+        # normalization of data weights
+        self.normalize_weight()
 
         # prepare the weight array
         self.weight_array = np.zeros([self.data_container.nwins])
         _idx = 0
+
         for window in self.window:
             for win_idx in range(window.num_wins):
                 self.weight_array[_idx] = window.weight[win_idx]
@@ -119,6 +125,7 @@ class Grid3d(object):
         if self.config.normalize_category:
             tag = window.tag['obsd']
             num_cat = self.bin_category[tag]
+            #window.weight = window.weight/math.sqrt(num_cat)
             window.weight = window.weight/num_cat
 
     def normalize_weight(self):
@@ -180,7 +187,6 @@ class Grid3d(object):
                 bin_category[tag] = window.num_wins
         self.bin_category = bin_category
 
-
     @staticmethod
     def get_azimuth_bin_number(azimuth):
         """
@@ -216,109 +222,119 @@ class Grid3d(object):
             naz_wins[tag][bin_idx] += window.num_wins
         return naz_files, naz_wins
 
-    def calculate_tshift(self):
-        array_idx = 0
-        for window in self.window:
-            window.tshift = np.zeros(window.num_wins)
-            for win_idx in range(window.num_wins):
-                datalist = window.datalist
-                obsd = datalist['obsd']
-                synt = datalist['synt']
-                npts = min(obsd.stats.npts, synt.stats.npts)
+    def calculate_tshift(self):                                                 
+        array_idx = 0                                                           
+        for window in self.window:                                              
+            window.tshift = np.zeros(window.num_wins)                           
+            tag = window.tag
+            for win_idx in range(window.num_wins):                              
+                datalist = window.datalist                                      
+                obsd = datalist['obsd']                                         
+                synt = datalist['synt']                                         
+                npts = min(obsd.stats.npts, synt.stats.npts)                    
                 win = [window.win_time[win_idx, 0], window.win_time[win_idx, 1]]
+                                                                                
+                istart = int(max(math.floor(win[0] / obsd.stats.delta), 1))     
+                iend = int(min(math.ceil(win[1] / obsd.stats.delta), npts))     
+                if istart > iend:                                               
+                    raise ValueError("Check window for %s.%s.%s.%s" %           
+                                    (window.station, window.network,            
+                                     window.location, window.component))        
+                obsd_trace = obsd.data[istart:iend]                             
+                synt_trace = synt.data[istart:iend]                             
+                max_cc, nshift = self._xcorr_win_(obsd_trace, synt_trace)       
+                tshift = nshift * obsd.stats.delta                              
+                window.tshift[win_idx] = tshift                                 
+                array_idx += 1                
 
-                istart = int(max(math.floor(win[0] / obsd.stats.delta), 1))
-                iend = int(min(math.ceil(win[1] / obsd.stats.delta), npts))
-                if istart > iend:
-                    raise ValueError("Check window for %s.%s.%s.%s" %
-                                    (window.station, window.network, 
-                                     window.location, window.component))
-                obsd_trace = obsd.data[istart:iend]
-                synt_trace = synt.data[istart:iend]
-                max_cc, nshift = self._xcorr_win_(obsd_trace, synt_trace)
-                tshift = nshift * obsd.stats.delta
-                window.tshift[win_idx] = tshift
-                self.tshift_array[array_idx] = tshift
-                array_idx += 1
+        tshift_dict = {'all':[]}
+        for window in self.window:                                              
+            tag = window.tag['synt']
+            if tag not in tshift_dict.keys():
+                tshift_dict[tag] = []
+            for win_idx in range(window.num_wins):
+                tshift_dict[tag].append(window.tshift[win_idx])
+                tshift_dict['all'].append(window.tshift[win_idx])
+        for tag, value in tshift_dict.iteritems():
+            self.tshift_dict[tag] = np.array(tshift_dict[tag])
 
-    def grid_search_source(self):
+    def stats_event(self):
 
         print "****************"
         print "See detailed result in: %s\n" %logfilename
 
         self.setup_weight()
 
-        if self.config.origin_time_inversion:
-            self.grid_search_origin_time()
+        weight_dict = {'all':[],}
+        for window in self.window:
+            tag = window.tag['synt']
+            if tag not in weight_dict.keys():
+                weight_dict[tag] = []
+            for win_idx in range(window.num_wins):
+                weight_dict[tag].append(window.weight[win_idx])
+                weight_dict['all'].append(window.weight[win_idx])
+        for tag, value in weight_dict.iteritems():
+            self.weight_dict[tag] = np.array(weight_dict[tag])
 
-        if self.config.energy_inversion:
-            self.grid_search_energy()
+        self.stats_tshift()
 
-    def grid_search_origin_time(self):
+        self.stats_energy()
 
-        logger.info("Origin time search...")
+        self.ensemble_result()
 
-        self.calculate_tshift()
+    def ensemble_result(self):
+        for tag in self.tshift_dict.keys():
+            self.misfit[tag] = {}
+            self.misfit[tag]['tshift'] = \
+                {"raw": np.sum(self.tshift_dict[tag]),
+                "weight": np.sum(self.tshift_dict[tag] * 
+                                 self.weight_dict[tag])}
+            self.misfit[tag]['dlnA'] = \
+                {"raw": np.sum(self.dlnA_dict[tag]), 
+                "weight": np.sum(self.dlnA_dict[tag] * 
+                                 self.weight_dict[tag])}
+            self.misfit[tag]['cc_amp'] = \
+                {"raw": np.sum(self.cc_amp_dict[tag]),
+                "weight": np.sum(self.cc_amp_dict[tag] * 
+                                 self.weight_dict[tag])}
+            self.misfit[tag]['kai'] = \
+                {"raw": np.sum(self.kai_dict[tag]),
+                "weight": np.sum(self.kai_dict[tag] * 
+                                 self.weight_dict[tag])}
+            self.misfit[tag]['nwins'] = len(self.weight_dict[tag])
 
-        t00_s = self.config.t00_s
-        t00_e = self.config.t00_e
-        dt00 = self.config.dt00_over_dt * \
-            self.window[0].datalist['obsd'].stats.delta
-        logger.info("Grid search dt00: %6.3f" % dt00)
+    def stats_tshift(self):                                          
+                                                                                
+        logger.info("Origin time search...")                                    
+                                                                                
+        self.calculate_tshift()                                                 
 
-        t00_array = np.arange(t00_s, t00_e+dt00, dt00)
-        nt00 = t00_array.shape[0]
-        misfit = np.zeros(nt00)
-
-        for i in range(nt00):
-            t00 = t00_array[i]
-            misfit[i] = self.calculate_tshift_misfit(t00)
-
-        # find minimum
-        min_idx = misfit.argmin()
-        t00_best = t00_array[min_idx]
-
-        logger.info("minimum t00: %6.3f" % t00_best)
-        self.t00_best = t00_best
-        self.t00_misfit = misfit
-        self.t00_array = t00_array
-
-    def grid_search_energy(self):
+    def stats_energy(self):
 
         logger.info('Energy Search...')
 
-        m00_s = self.config.m00_s
-        m00_e = self.config.m00_e
-        dm00 = self.config.dm00
-        m00_array = np.arange(m00_s, m00_e+dm00, dm00)
-        nm00 = m00_array.shape[0]
-        misfit = np.zeros(nm00)
+        self.calculate_misfit_for_m00(1.00)
 
-        for i in range(nm00):
-            m00 = m00_array[i]
-            dlnA_array, cc_amp_array, kai_array = \
-                self.calculate_misfit_for_m00(m00)
-            if self.config.energy_misfit_function == 'energy':
-                misfit[i] = \
-                    np.sum((0.25 * dlnA_array ** 2 + 0.0 * cc_amp_array ** 2)
-                           * self.weight_array)
-            else:
-                misfit[i] = np.sum(kai_array * self.weight_array)
+    def write_output_log(self, outputdir="."):
+        eventname = self.cmtsource.eventname
+        for tag in self.tshift_dict.keys():
+            tshift_array = self.tshift_dict[tag]
+            dlnA_array = self.dlnA_dict[tag]
+            cc_amp_array = self.cc_amp_dict[tag]
+            kai_array = self.kai_dict[tag]
+            weight_array = self.weight_dict[tag]
 
-        # find minimum
-        min_idx = misfit.argmin()
-        m00_best = m00_array[min_idx]
-
-        logger.info("best m00: %6.3f" % m00_best)
-        self.m00_best = m00_best
-        self.m00_misfit = misfit
-        self.m00_array = m00_array
+            filename = os.path.join(outputdir, "%s.%s.data.log" %
+                                    (eventname, tag))
+            with open(filename, 'w') as fh:
+                for idx in range(len(tshift_array)):
+                    fh.write("%12.4f %12.5f %12.5f %10.5f %12.5f\n" %
+                             (tshift_array[idx], dlnA_array[idx],
+                              cc_amp_array[idx], kai_array[idx],
+                              weight_array[idx]))
 
     def calculate_misfit_for_m00(self, m00):
-        dlnA_array = []
-        cc_amp_array = []
-        kai_array = []
-        total_idx = 0
+
         for window in self.window:
             obsd = window.datalist['obsd']
             synt = window.datalist['synt']
@@ -326,11 +342,32 @@ class Grid3d(object):
             synt_new.data = synt_new.data * m00
             [v, d, nshift, cc, dlnA, cc_amp_value] = \
                 self.calculate_var_one_trace(obsd, synt_new, window.win_time)
-            for win_idx in range(window.num_wins):
-                dlnA_array.append(dlnA[win_idx])
-                cc_amp_array.append(cc_amp_value[win_idx])
-                kai_array.append(v[win_idx]/d[win_idx])
-        return np.array(dlnA_array), np.array(cc_amp_array), np.array(kai_array)
+
+            window.dlnA = dlnA
+            window.cc_amp = cc_amp_value
+            window.kai_array = v/d
+
+        dlnA_dict = {'all':[]}
+        cc_amp_dict = {'all':[]}
+        kai_dict = {'all':[]}
+
+        for window in self.window:
+            tag = window.tag['synt']
+            if tag not in dlnA_dict.keys():
+                dlnA_dict[tag] = []
+                cc_amp_dict[tag] = []
+                kai_dict[tag] = []
+            dlnA_dict[tag].extend(window.dlnA)
+            dlnA_dict['all'].extend(window.dlnA)
+            cc_amp_dict[tag].extend(window.cc_amp)
+            cc_amp_dict['all'].extend(window.cc_amp)
+            kai_dict[tag].extend(window.kai_array)
+            kai_dict['all'].extend(window.kai_array)
+
+        for tag in dlnA_dict.keys():
+            self.dlnA_dict[tag] = np.array(dlnA_dict[tag])
+            self.cc_amp_dict[tag] = np.array(cc_amp_dict[tag])
+            self.kai_dict[tag] = np.array(kai_dict[tag])
 
     def calculate_var_one_trace(self, obsd, synt, win_time):
         """
@@ -425,149 +462,6 @@ class Grid3d(object):
         dlnA = self._dlnA_win_(obsd_trace, synt_trace)
 
         return [nshift, max_cc, dlnA]
-
-    def calculate_tshift_misfit(self, t00):
-        misfit = np.sum(self.weight_array * (self.tshift_array - t00)**2)
-        return misfit
-
-    def plot_summary(self, outputdir="."):
-
-        if not os.path.exists(outputdir):
-            os.makedirs(outputdir)
-
-        if self.config.origin_time_inversion:
-            self.plot_origin_time_summary(outputdir=outputdir)
-        if self.config.energy_inversion:
-            self.plot_energy_summary(outputdir=outputdir)
-
-    def plot_origin_time_summary(self, outputdir="."):
-        """
-        Plot histogram and misfit curve of origin time result
-
-        :param outputdir:
-        :return:
-        """
-        # histogram
-        nrows = len(self.bin_category.keys())
-        ncols = 1
-        figname = "%s.time_grid_search_histogram.png" \
-            % self.cmtsource.eventname
-        figname = os.path.join(outputdir, figname)
-
-        # prepare the dict
-        stats_before = {}
-        stats_after = {}
-        for window in self.window:
-            tag = window.tag['obsd']
-            if tag not in stats_before.keys():
-                stats_before[tag] = []
-            for _idx in range(window.num_wins):
-                stats_before[tag].append(window.tshift[_idx])
-        stats_after = stats_before.copy()
-        for key in stats_before.keys():
-            stats_before[key] = np.array(stats_before[key])
-            stats_after[key] = np.array(stats_after[key])
-            stats_after[key] = stats_after[key] - self.t00_best
-
-        entry_array = ['tshift']
-        nrows = len(self.bin_category.keys())
-        ncols = len(entry_array)
-        plt.figure(figsize=(5*ncols, 5*nrows))
-        G = gridspec.GridSpec(nrows, ncols)
-        tag_array = stats_before.keys()
-        for tag_idx, tag in enumerate(tag_array):
-            for entry_idx, entry in enumerate(entry_array):
-                self.plot_histogram_one_entry(
-                    G[tag_idx, entry_idx], tag, entry, 
-                    stats_before[tag], stats_after[tag])
-        print "Grid search time shift histogram figure: %s" % figname
-        plt.savefig(figname)
-
-        # plot misfit curve
-        figname = "%s.time_grid_search_misfit.png" % self.cmtsource.eventname
-        figname = os.path.join(outputdir, figname)
-        plt.figure()
-        plt.plot(self.t00_array, self.t00_misfit)
-        plt.grid()
-        print "Grid search time shift misfit figure: %s" % figname
-        plt.savefig(figname)
-
-    def plot_energy_summary(self, outputdir="."):
-        """
-        Plot histogram of dlnA 
-
-        :param outputdir:
-        :return:
-        """
-        figname = "%s.energy_grid_search_histogram.png" \
-            % self.cmtsource.eventname
-        figname = os.path.join(outputdir, figname)
-
-        # prepare the dict
-        stats_before = {}
-        stats_after = {}
-        for window in self.window:
-            tag = window.tag['obsd']
-            obsd = window.datalist['obsd']
-            synt = window.datalist['synt']
-            synt_new = synt.copy()
-            synt_new.data = synt_new.data * self.m00_best
-            if tag not in stats_before.keys():
-                stats_before[tag] = []
-                stats_after[tag] = []
-            [v1, d1, nshift1, cc1, dlnA1, cc_amp_value1] = \
-                self.calculate_var_one_trace(obsd, synt, window.win_time)
-            [v2, d2, nshift2, cc2, dlnA2, cc_amp_value2] = \
-                self.calculate_var_one_trace(obsd, synt_new, window.win_time)
-            for _idx in range(window.num_wins):
-                stats_before[tag].append([v1[_idx]/d1[_idx], cc1[_idx], 
-                                          dlnA1[_idx], cc_amp_value1[_idx]])
-                stats_after[tag].append([v2[_idx]/d2[_idx], cc2[_idx], 
-                                         dlnA2[_idx], cc_amp_value2[_idx]])
-        for key in stats_before.keys():
-            stats_before[key] = np.array(stats_before[key])
-            stats_after[key] = np.array(stats_after[key])
-
-        entry_array = ['Kai', 'CC', 'Power Ratio', 'CC AMP']
-        nrows = len(self.bin_category.keys())
-        ncols = len(entry_array)
-        plt.figure(figsize=(5*ncols, 5*nrows))
-        G = gridspec.GridSpec(nrows, ncols)
-        tag_array = stats_before.keys()
-        for tag_idx, tag in enumerate(tag_array):
-            for entry_idx, entry in enumerate(entry_array):
-                self.plot_histogram_one_entry(
-                    G[tag_idx, entry_idx], tag, entry, 
-                    stats_before[tag][:, entry_idx],
-                    stats_after[tag][:, entry_idx])
-        print "Grid search energy histogram figure: %s" % figname
-        plt.savefig(figname)
-
-        # plot misfit curve
-        plt.figure()
-        figname = "%s.energy_grid_search_misfit.png" % self.cmtsource.eventname
-        figname = os.path.join(outputdir, figname)
-        plt.plot(self.m00_array, self.m00_misfit)
-        plt.grid()
-        print "Grid search energy misfit curve figure: %s" % figname
-        plt.savefig(figname)
-
-    @staticmethod
-    def plot_histogram_one_entry(pos, tag, entry, value_before, value_after):
-        ax = plt.subplot(pos)
-        plt.xlabel(entry)
-        plt.ylabel(tag)
-        ax_min = min(min(value_after), min(value_before))
-        ax_max = max(max(value_after), max(value_after))
-        if entry in ['tshift', 'CC AMP', 'Power Ratio']:
-            abs_max = max(abs(ax_min), abs(ax_max))
-            ax_min = -abs_max
-            ax_max = abs_max
-        binwidth = (ax_max - ax_min) / 15
-        plt.hist(value_before, bins=np.arange(ax_min, ax_max+binwidth/2., binwidth),
-                 facecolor='blue', alpha=0.3)
-        plt.hist(value_after, bins=np.arange(ax_min, ax_max+binwidth/2., binwidth),
-                 facecolor='green', alpha=0.5)
 
     @staticmethod
     def _xcorr_win_(obsd, synt):

@@ -21,23 +21,27 @@ class Config(object):
     Configuration for source inversion
 
     :param npar: number of parameters to be inverted
-    :param dlocation: location perturbation when calculated perturbed synthetic data
+    :param dlocation: location perturbation when calculated 
+        perturbed synthetic data
     :param ddepth: depth perturbation
     :param dmoment: moment perturbation
     :param weight_data: bool value of weighting data
     :param weight_function: weighting function
     :param normalize_window: add window energy into the weighting term
     :param norm_mode: two modes: 1) "data_and_synt" 2) "data_only"
-    :param station_correction: bool value of whether applies station correction
+    :param station_correction: bool value of whether applies station 
+        correction
     :param zero_trace: bool value of whether applies zero-trace constraint
-    :param double_couple: bool value of whether applied double-couple constraint
+    :param double_couple: bool value of whether applied double-couple 
+        constraint
     :param lamda_damping: damping coefficient
     :param bootstrap: bool value of whether applied bootstrap method
     :param bootstrap_repeat: bootstrap iterations
     """
 
-    def __init__(self, origin_time_inversion=True, t00_s=-5.0, t00_e=5.0, dt00_over_dt=1,
-                 energy_inversion=True, m00_s=0.50, m00_e=1.50, dm00=0.04, energy_misfit_function="waveform",
+    def __init__(self, origin_time_inversion=True, t00_s=-5.0, t00_e=5.0, 
+                 dt00_over_dt=1, energy_inversion=True, m00_s=0.80, 
+                 m00_e=1.20, dm00=0.01, energy_misfit_function="waveform",
                  weight_data=True, weight_function=None,
                  normalize_category=True):
 
@@ -48,7 +52,8 @@ class Config(object):
         self.dt00_over_dt = dt00_over_dt
         self.energy_inversion = energy_inversion
         if energy_misfit_function.lower() not in ['waveform', 'energy']:
-            raise ValueError("Two energy_misfit_function: 1) waveform; 2) energy")
+            raise ValueError("Two energy_misfit_function: "
+                             "1) waveform; 2) energy")
         self.energy_misfit_function = energy_misfit_function
         self.m00_s = m00_s
         self.m00_e = m00_e
@@ -74,9 +79,11 @@ class Config(object):
         logger.info("Weighting scheme")
         if self.weight_data:
             if self.weight_function == default_weight_function:
-                logger.info("   Weighting data ===> Using Default weighting function")
+                logger.info("   Weighting data ===> Using Default "
+                            "weighting function")
             else:
-                logger.info("   Weighting data ===> Using user-defined weighting function")
+                logger.info("   Weighting data ===> Using user-defined"
+                            "weighting function")
         else:
             logger.info("   No weighting applied")
         if self.origin_time_inversion:
