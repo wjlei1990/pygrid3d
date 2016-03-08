@@ -15,10 +15,11 @@ except:
 import const
 
 
-def default_weight_function(kcmpnm, dist_in_km, azi_count, nwins,
-                            comp_r_weight=2.0, comp_t_weight=2.0, comp_z_weight=2.0,
-                            az_exp_weight=0.5, pnl_dist_weight=1.15, rayleigh_dist_weight=0.55,
-                            love_dist_weight=0.78, dist_weight_mode="exponential"):
+def default_weight_function(
+        kcmpnm, dist_in_km, azi_count, nwins,
+        comp_r_weight=2.0, comp_t_weight=2.0, comp_z_weight=2.0,
+        az_exp_weight=0.5, pnl_dist_weight=1.15, rayleigh_dist_weight=0.55,
+        love_dist_weight=0.78, dist_weight_mode="exponential"):
 
     """
     Defualt weighting function
@@ -47,7 +48,8 @@ def default_weight_function(kcmpnm, dist_in_km, azi_count, nwins,
     elif comp_direct == 'T':
         cmp_weight = comp_t_weight
     else:
-        raise ValueError('The direction of component of seismic data has to be Z, R or T')
+        raise ValueError("The direction of component of seismic data has "
+                         "to be Z, R or T")
 
     # distance weights
     # for global seismograms, this obviously has to be changed
@@ -62,13 +64,17 @@ def default_weight_function(kcmpnm, dist_in_km, azi_count, nwins,
 
         if dist_weight_mode.lower() == "exponential":
             # exponential weight on distance
-            data_weight[win_idx] = cmp_weight * ((dist_in_km/const.REF_DIST) ** dist_exp_weight) / (azi_count ** az_exp_weight)
+            data_weight[win_idx] = \
+                cmp_weight * \
+                ((dist_in_km/const.REF_DIST) ** dist_exp_weight) /\
+                (azi_count ** az_exp_weight)
         elif dist_weight_mode.lower() == "uniform":
             # no distance weighting
             data_weight[win_idx] = cmp_weight / (azi_count ** az_exp_weight)
         elif dist_weight_mode.lower() == "damping":
             # damping over short distance and long distance
-            data_weight[win_idx] = cmp_weight / (azi_count ** az_exp_weight) * dist_damping_function(dist_in_km)
+            data_weight[win_idx] = cmp_weight / (azi_count ** az_exp_weight) \
+                * dist_damping_function(dist_in_km)
 
     return data_weight
 

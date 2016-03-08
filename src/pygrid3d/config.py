@@ -4,24 +4,17 @@
 """
 Configuration object for pycmt3d
 """
-
-try:
-    import numpy as np
-except:
-    msg = ("No module named numpy. "
-           "Please install numpy first, it is needed before using pycmt3d.")
-    raise ImportError(msg)
-
-import const
+from __future__ import print_function, division
 from __init__ import logger
-from user_defined_weighting_function import *
+from user_defined_weighting_function import default_weight_function
 
-class Config(object):
+
+class Grid3dConfig(object):
     """
     Configuration for source inversion
 
     :param npar: number of parameters to be inverted
-    :param dlocation: location perturbation when calculated 
+    :param dlocation: location perturbation when calculated
         perturbed synthetic data
     :param ddepth: depth perturbation
     :param dmoment: moment perturbation
@@ -29,18 +22,18 @@ class Config(object):
     :param weight_function: weighting function
     :param normalize_window: add window energy into the weighting term
     :param norm_mode: two modes: 1) "data_and_synt" 2) "data_only"
-    :param station_correction: bool value of whether applies station 
+    :param station_correction: bool value of whether applies station
         correction
     :param zero_trace: bool value of whether applies zero-trace constraint
-    :param double_couple: bool value of whether applied double-couple 
+    :param double_couple: bool value of whether applied double-couple
         constraint
     :param lamda_damping: damping coefficient
     :param bootstrap: bool value of whether applied bootstrap method
     :param bootstrap_repeat: bootstrap iterations
     """
 
-    def __init__(self, origin_time_inversion=True, t00_s=-5.0, t00_e=5.0, 
-                 dt00_over_dt=1, energy_inversion=True, m00_s=0.80, 
+    def __init__(self, origin_time_inversion=True, t00_s=-5.0, t00_e=5.0,
+                 dt00_over_dt=1, energy_inversion=True, m00_s=0.80,
                  m00_e=1.20, dm00=0.01, energy_misfit_function="waveform",
                  weight_data=True, weight_function=None,
                  normalize_category=True):
